@@ -4,30 +4,40 @@ import pytz
 import asyncio
 
 # --- Your Name ---
-NAME = "‍‍"
+NAME = "𝒎𝒂𝒎𝒂𝒅"
+
+# --- Invisible separator ---
+ZW = "\u200b"  # zero-width space
+
 # --- Timezone ---
 TIME_ZONE = "Asia/Tehran"
+
 # --- Time format ---
 TIME_FORMAT = "%H:%M"
 
+# --- Small number map ---
+SMALL_NUMS = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    ":": "ː"
+}
+
+def small_time(time_str):
+    return "".join(SMALL_NUMS.get(ch, ch) for ch in time_str)
+
 async def update_name(client):
-    """Continuously updates the user's profile name with the current time."""
     print("🕒 Name updater started...")
     while True:
         try:
-            time_zone = pytz.timezone(TIME_ZONE)
-            current_time = datetime.datetime.now(time_zone).strftime(TIME_FORMAT)
+            tz = pytz.timezone(TIME_ZONE)
+            current_time = datetime.datetime.now(tz).strftime(TIME_FORMAT)
+            tiny_time = small_time(current_time)
 
-            new_name = f"{NAME} | {current_time}"
-
-            # print(f"Updating name to: {new_name}") # Optional: uncomment for debugging
+            new_name = f"{NAME}{ZW}{tiny_time}"
 
             await client(UpdateProfileRequest(first_name=new_name))
 
-            # print("Name updated successfully.") # Optional: uncomment for debugging
-
         except Exception as e:
-            print(f"❌ An error occurred in name updater: {e}")
+            print(f"❌ Error: {e}")
 
-        # Wait for 60 seconds before the next update
         await asyncio.sleep(60)
