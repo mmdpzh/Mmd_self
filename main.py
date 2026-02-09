@@ -1,201 +1,394 @@
-import asyncio
-import os
-import threading
-from flask import Flask
+# =======================
+# main.py - نسخه نهایی سلف‌بات
+# =======================
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from name_updater import update_name
+import asyncio
+from flask import Flask
+import threading
+import os
+import yt_dlp
+import glob
+import re
+import sys
+import random
 
-# ================== Bold Writer (FA + EN) ==================
-BOLD_MAP = {
-    # English lowercase
-    "a":"𝗮","b":"𝗯","c":"𝗰","d":"𝗱","e":"𝗲","f":"𝗳","g":"𝗴","h":"𝗵","i":"𝗶","j":"𝗷",
-    "k":"𝗸","l":"𝗹","m":"𝗺","n":"𝗻","o":"𝗼","p":"𝗽","q":"𝗾","r":"𝗿","s":"𝗼","t":"𝗿",
-    "u":"𝘂","v":"𝘃","w":"𝘄","x":"𝘅","y":"𝘆","z":"𝘇",
+# =======================
+# تنظیمات Telethon و اعتبارسنجی
+# =======================
+api_id = os.environ.get("API_ID")
+api_hash = os.environ.get("API_HASH")
+session_string = os.environ.get("SESSION")
 
-    # English uppercase
-    "A":"𝗔","B":"𝗕","C":"𝗖","D":"𝗗","E":"𝗘","F":"𝗙","G":"𝗚","H":"𝗛","I":"𝗜","J":"𝗝",
-    "K":"𝗞","L":"𝗟","M":"𝗠","N":"𝗡","O":"𝗢","P":"𝗣","Q":"𝗤","R":"𝗥","S":"𝗦","T":"𝗧",
-    "U":"𝗨","V":"𝗩","W":"𝗪","X":"𝗫","Y":"𝗬","Z":"𝗭",
+# اعتبارسنجی متغیرهای محیطی
+if not api_id or not api_hash or not session_string:
+    print("خطا: لطفاً متغیرهای محیطی API_ID, API_HASH, و SESSION را به درستی تنظیم کنید.")
+    sys.exit(1)
 
-    # Numbers
-    "0":"𝟬","1":"𝟭","2":"𝟮","3":"𝟯","4":"𝟰",
-    "5":"𝟱","6":"𝟲","7":"𝟳","8":"𝟴","9":"𝟵"
-}
+try:
+    api_id = int(api_id)
+except ValueError:
+    print("خطا: API_ID باید یک عدد صحیح باشد.")
+    sys.exit(1)
 
-def bold_text(text: str) -> str:
-    return "".join(BOLD_MAP.get(ch, ch) for ch in text)
+client = TelegramClient(StringSession(session_string), api_id, api_hash)
 
-# ================== تنظیمات ==================
-api_id_env = os.getenv("API_ID")
-api_id = int(api_id_env) if api_id_env and api_id_env.isdigit() else None
-api_hash = os.getenv("API_HASH")
-session_string = os.getenv("SESSION_STRING")
-owner_id_env = os.getenv("OWNER_ID")
-OWNER_ID = int(owner_id_env) if owner_id_env and owner_id_env.isdigit() else None
+# =======================
+# Flask برای زنده نگه داشتن Render
+# =======================
+app = Flask("")
 
-client = None
-if all([api_id, api_hash, session_string]):
-    client = TelegramClient(StringSession(session_string), api_id, api_hash)
-else:
-    missing_vars = []
-    if not api_id: missing_vars.append("API_ID")
-    if not api_hash: missing_vars.append("API_HASH")
-    if not session_string: missing_vars.append("SESSION_STRING")
-    print(f"❌ Error: The following environment variables are missing or invalid: {', '.join(missing_vars)}")
-    exit()
-
-if not OWNER_ID:
-    print("⚠️ Warning: OWNER_ID environment variable not set. The bot will respond to everyone.")
-
-# ================== Keep-alive Web Server ==================
-app = Flask(__name__)
-
-@app.route('/')
+@app.route("/")
 def home():
-    return "Auto-sender and Name-updater bot is running!"
+    return "سلف‌بات فعال است ✅"
 
-# ================== دیتای کاربر ==================
-user_data = {}
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
-# ================== تعامل با کاربر ==================
-@client.on(events.NewMessage(pattern='/start'))
-async def start(event):
-    if OWNER_ID and event.sender_id != OWNER_ID:
+threading.Thread(target=run_flask).start()
+
+# =======================
+# توابع کمکی دستور alo
+# =======================
+def read_dialog_from_file(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [line.rstrip("\n") for line in f.readlines()]
+    return [ln for ln in lines if ln.strip() != ""]
+
+def render_lines(lines, target_name):
+    return [ln.format(target_name=target_name) for ln in lines]
+
+# =======================
+# تنظیمات دستور alo
+# =======================
+DIALOG_FILE = "dialog.txt"
+DELAY_SECONDS = 0.3
+
+# =======================
+# دستورات ساده
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.ping"))
+async def ping(event):
+    await event.edit("Pong!")
+
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.hello"))
+async def hello(event):
+    await event.edit("Hello!")
+
+# =======================
+# دستور Alo
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.alo(?: (.+))?"))
+async def alo_handler(event):
+    target_name = event.pattern_match.group(1)
+    if not target_name:
+        await event.edit("❌ لطفاً اسم را بعد از دستور وارد کن: `.alo <target_name>`")
         return
 
-    user_id = event.sender_id
-
-    if user_id in user_data and 'task' in user_data[user_id]:
-        user_data[user_id]['task'].cancel()
-
-    user_data[user_id] = {'bold': True}  # پیش‌فرض بولد روشن
-    await event.respond(
-        "سلام! 👋\n"
-        "ربات ارسال‌کننده و آپدیت‌کننده‌ی نام آماده است.\n"
-        "برای تنظیم ارسال خودکار، لطفا عکس مورد نظر را ارسال کنید.\n"
-        "برای توقف، از دستور /stop استفاده کنید.\n"
-        "برای روشن یا خاموش کردن بولد، از دستور .bold on یا .bold off استفاده کنید."
-    )
-
-@client.on(events.NewMessage(pattern='/stop'))
-async def stop(event):
-    if OWNER_ID and event.sender_id != OWNER_ID:
+    lines = read_dialog_from_file(DIALOG_FILE)
+    if not lines:
+        await event.edit(f"❌ فایل `{DIALOG_FILE}` پیدا نشد یا خالی است.")
         return
 
-    user_id = event.sender_id
-    if user_id in user_data and 'task' in user_data[user_id] and not user_data[user_id]['task'].done():
-        user_data[user_id]['task'].cancel()
-        del user_data[user_id]
-        await event.respond("ارسال خودکار متوقف شد. ✅")
-    else:
-        await event.respond("هیچ فرآیند ارسال خودکاری برای متوقف کردن وجود ندارد.")
+    # Delete the command message before sending the dialog
+    await event.delete()
 
-@client.on(events.NewMessage)
-async def handle_messages(event):
-    if event.text and event.text.startswith('/'):
+    to_send = render_lines(lines, target_name.strip())
+
+    # Start sending the dialog messages
+    for line in to_send:
+        await client.send_message(event.chat_id, line)
+        await asyncio.sleep(DELAY_SECONDS)
+
+# =======================
+# دستور Download
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.download(?: (mp3|mp4))? (.*)"))
+async def download_media(event):
+    await event.edit("📥 در حال دانلود...")
+
+    # Parse arguments
+    args = event.pattern_match.groups()
+    format_pref = args[0] if args[0] else "mp4"
+    url = args[1]
+
+    output_template = "downloads/%(title)s.%(ext)s"
+
+    # Configure yt-dlp options
+    ydl_opts = {
+        'format': 'bestvideo+bestaudio/best' if format_pref == 'mp4' else 'bestaudio/best',
+        'outtmpl': output_template,
+        'writethumbnail': True,
+        'nopostoverwrites': True,
+        'cookiefile': 'cookies_youtube.txt' if 'youtube.com' in url or 'youtu.be' in url else ('cookies_instagram.txt' if 'instagram.com' in url else None),
+        'postprocessors': [],
+    }
+
+    if format_pref == 'mp4':
+        ydl_opts['postprocessors'].append({'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'})
+    elif format_pref == 'mp3':
+        ydl_opts['postprocessors'].append({
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        })
+        ydl_opts['postprocessors'].append({'key': 'EmbedThumbnail'})
+
+    # Create downloads directory if it doesn't exist
+    if not os.path.isdir('downloads'):
+        os.makedirs('downloads')
+
+    downloaded_file = ""
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            downloaded_file = ydl.prepare_filename(info)
+
+            base_filename = os.path.splitext(downloaded_file)[0]
+
+            if format_pref == 'mp3':
+                final_file = base_filename + '.mp3'
+            else:
+                final_file = base_filename + '.mp4'
+
+        if not os.path.exists(final_file):
+             await event.edit(f"❌ فایل دانلود شده پیدا نشد: `{final_file}`")
+             # Cleanup failed download
+             base_filename_no_ext = os.path.splitext(downloaded_file)[0]
+             for f in glob.glob(base_filename_no_ext + '.*'):
+                 os.remove(f)
+             return
+
+        await event.edit("📤 در حال آپلود...")
+
+        thumbnail_path = base_filename + '.webp'
+        if not os.path.exists(thumbnail_path):
+             thumbnail_path = base_filename + '.jpg'
+        if not os.path.exists(thumbnail_path):
+            thumbnail_path = None
+
+        await client.send_file(
+            event.chat_id,
+            file=final_file,
+            thumb=thumbnail_path,
+            caption=info.get('title', 'Downloaded Media'),
+            reply_to=event.message.id
+        )
+        await event.delete()
+
+    except Exception as e:
+        error_message = str(e)
+        await event.edit(f"❌ خطا در دانلود: {error_message}")
+
+    finally:
+        # Cleanup successful download
+        if downloaded_file:
+            base_filename_no_ext = os.path.splitext(downloaded_file)[0]
+            for f in glob.glob(base_filename_no_ext + '.*'):
+                os.remove(f)
+
+# =======================
+# متغیرهای دستورات
+# =======================
+bold_active = False
+autospam_active = False
+autospam_tasks = []
+
+# متغیرهای مربوط به Enemy
+enemy_id = None
+enemy_active = False
+enemy_responses = [
+    "پیام نده ماد،ر ج،نده",
+    "حر.وم زاد.ه پیام نده",
+    "ز.نا زا.ده ما.درتو گا.ییدم",
+    "خا.هرتو گا.ییدم",
+    "کی.ر تو اول تا آخرت ",
+    "کی.رم تو ک.ص نن.ت",
+    "ب.ی نا.موس ماد.ر جن.ده",
+    "خا.هر ما.درتو گایی.دم",
+    "ک.ص ما.درت",
+    "ک.ص خاه.رت",
+]
+
+# =======================
+# دستور Bold
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.bold on"))
+async def bold_on(event):
+    global bold_active
+    bold_active = True
+    await event.edit("✅ بولد خودکار فعال شد.")
+
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.bold off"))
+async def bold_off(event):
+    global bold_active
+    bold_active = False
+    await event.edit("🛑 بولد خودکار غیرفعال شد.")
+
+# Handler to apply bold to non-command messages
+@client.on(events.NewMessage(outgoing=True))
+async def handle_bold_text(event):
+    # Avoid applying bold to commands or empty messages
+    if bold_active and event.text and not event.text.startswith('.'):
+        # Add a small delay to ensure the command message is processed first
+        await asyncio.sleep(0.1)
+        await event.edit(f"**{event.text}**")
+
+# =======================
+# دستور Autospam
+# =======================
+# Note: The start handler uses a negative lookahead to avoid matching ".autospam off"
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.autospam(?! off)"))
+async def start_autospam(event):
+    global autospam_active, autospam_tasks
+    if autospam_active:
+        await event.edit("⚠️ ارسال خودکار قبلا فعال شده است.")
         return
 
-    if OWNER_ID and event.sender_id != OWNER_ID:
-        return
-
-    user_id = event.sender_id
-    if user_id not in user_data:
-        user_data[user_id] = {'bold': True}  # اگر کاربر جدیده، پیش‌فرض بولد روشن
-
-    # ================== کنترل بولد ==================
-    if event.text == ".bold on":
-        user_data[user_id]['bold'] = True
-        await event.respond("بولد فعال شد ✅")
-        return
-
-    if event.text == ".bold off":
-        user_data[user_id]['bold'] = False
-        await event.respond("بولد غیرفعال شد ✅")
-        return
-
-    if 'task' in user_data[user_id] and not user_data[user_id]['task'].done():
-        return
-
-    data = user_data[user_id]
-
-    if 'photo' not in data and not event.photo:
-        return
-
-    if 'photo' not in data and event.photo:
-        data['photo'] = await event.download_media()
-        await event.respond("عکس دریافت شد ✅\nحالا متن پیام مورد نظر را وارد کنید.")
-        return
-
-    if 'photo' in data and 'text' not in data:
-        if user_data[user_id].get('bold', True):
-            data['text'] = bold_text(event.text)
-        else:
-            data['text'] = event.text
-        await event.respond("متن دریافت شد ✅\nلطفا آیدی یا یوزرنیم گروه‌ها را وارد کنید (با فاصله جدا کنید):")
-        return
-
-    if 'text' in data and 'groups' not in data:
-        data['groups'] = event.text.split()
-        await event.respond("گروه‌ها دریافت شد ✅\nلطفا زمان بین ارسال‌ها را به دقیقه وارد کنید:")
-        return
-
-    if 'groups' in data and 'interval' not in data:
-        try:
-            data['interval'] = int(event.text)
-            await event.respond(
-                f"تنظیم شد ✅\n"
-                f"از حالا هر {data['interval']} دقیقه یکبار، پیام شما ارسال خواهد شد."
-            )
-            task = asyncio.create_task(auto_send(user_id))
-            user_data[user_id]['task'] = task
-        except ValueError:
-            await event.respond("لطفا فقط یک عدد معتبر وارد کنید.")
-
-# ================== ارسال خودکار ==================
-async def auto_send(user_id):
-    if user_id not in user_data:
-        return
-
-    data = user_data[user_id]
-    photo_path = data.get('photo')
-    text = data.get('text', '')
-    groups = data.get('groups', [])
-    interval_minutes = data.get('interval')
-
-    if not all([photo_path, groups, interval_minutes]):
+    lines = event.raw_text.split("\n")[1:]
+    if not lines:
+        await event.edit("❌ لطفاً گروه‌ها و پیام‌ها را وارد کنید.")
         return
 
     try:
-        while True:
-            for group in groups:
+        # Check if the first line is the interval
+        interval_line = lines[0].strip()
+        interval = int(interval_line)
+        content_lines = lines[1:]
+    except (ValueError, IndexError):
+        # Default interval if not specified or first line is not a number
+        interval = 300
+        content_lines = lines
+
+    pairs = []
+    for line in content_lines:
+        if not line.strip():
+            continue
+        parts = line.strip().split(" ", 1)
+        if len(parts) == 2:
+            group, msg = parts
+            pairs.append((group.strip(), msg.strip()))
+
+    if not pairs:
+        await event.edit("❌ فرمت دستور اشتباه است. مثال درست:\n.autospam 300\n@Group1 پیام اول\n@Group2 پیام دوم")
+        return
+
+    autospam_active = True
+    await event.edit(f"✅ ارسال خودکار فعال شد. فاصله ارسال: {interval} ثانیه.")
+
+    async def send_loop():
+        while autospam_active:
+            for group, msg in pairs:
                 try:
-                    await client.send_file(group, photo_path, caption=text)
+                    await client.send_message(group, msg)
+                    await asyncio.sleep(3)
                 except Exception as e:
-                    print(f"❌ Error sending to {group}: {e}")
-            await asyncio.sleep(interval_minutes * 60)
-    except asyncio.CancelledError:
-        pass
-    finally:
-        if photo_path and os.path.exists(photo_path):
-            os.remove(photo_path)
+                    print(f"❌ خطا در ارسال به {group}: {e}")
+            await asyncio.sleep(interval)
 
-# ================== اجرای کلاینت ==================
-async def main_runner():
-    await client.start()
-    print("🤖 Bot is ready and listening...")
+    task = asyncio.create_task(send_loop())
+    autospam_tasks.append(task)
 
-    asyncio.create_task(update_name(client))
-    await client.run_until_disconnected()
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.autospam off"))
+async def stop_autospam(event):
+    global autospam_active, autospam_tasks
+    if not autospam_active:
+        await event.edit("⚠️ ارسال خودکار فعال نیست.")
+        return
 
-def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(main_runner())
+    autospam_active = False
+    for task in autospam_tasks:
+        task.cancel()
+    autospam_tasks.clear()
+    await event.edit("🛑 ارسال خودکار متوقف شد.")
 
-if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+# =======================
+# دستور Enemy
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.enemy"))
+async def enemy_handler(event):
+    global enemy_id, enemy_active
 
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    # .enemy off command
+    if event.raw_text.strip() == ".enemy off":
+        enemy_active = False
+        enemy_id = None
+        await event.edit("❌ سیستم enemy متوقف شد. دیگه ریپلای نمیزنم.")
+        return
+
+    # Must be a reply to a message
+    if not event.is_reply:
+        await event.edit("⚠️ برای فعال کردن enemy، باید روی پیام یک نفر ریپلای کنی.")
+        return
+
+    reply_msg = await event.get_reply_message()
+    enemy_id = reply_msg.from_id.user_id
+    enemy_active = True
+    await event.edit(f"🎯 Enemy فعال شد برای کاربر: `{enemy_id}`")
+
+# Handler for replying to the enemy
+@client.on(events.NewMessage(incoming=True))
+async def reply_to_enemy(event):
+    if not enemy_active or not (event.is_private or event.is_group):
+        return
+
+    # Check if the message is from the enemy
+    if enemy_id and event.message.from_id and event.message.from_id.user_id == enemy_id:
+        # Choose a random response and reply
+        response = random.choice(enemy_responses)
+        await event.reply(response)
+
+
+# =======================
+# دستور Help
+# =======================
+@client.on(events.NewMessage(outgoing=True, pattern=r"\.help"))
+async def send_help(event):
+    help_text = """
+✨🚀 **راهنمای دستورات سلف‌بات YASIN** 🚀✨
+
+╭─🌐 **دستورات عمومی**
+│ • `.ping` » بررسی آنلاین بودن ربات
+│ • `.hello` » سلام کردن
+│ • `.alo <نام>` » ارسال دیالوگ از `dialog.txt`
+╰───────────────
+
+╭─🎵 **دانلود مدیا**
+│ • `.download mp4 <url>` » دانلود ویدیو
+│ • `.download mp3 <url>` » دانلود صوت
+│ *در صورت عدم تعیین فرمت، mp4 دانلود می‌شود*
+╰───────────────
+
+╭─🖋 **بولد خودکار**
+│ • `.bold on` » فعال کردن بولد خودکار
+│ • `.bold off` » غیرفعال کردن بولد خودکار
+╰───────────────
+
+╭─📤 **ارسال خودکار پیام**
+│ • `.autospam` » فعال کردن ارسال خودکار
+│ • `.autospam off` » متوقف کردن ارسال خودکار
+│
+│ 🔹 مثال:
+│ `.autospam 300`
+│ `@Group1 پیام شما برای گروه اول`
+│ `@channel2 پیام شما برای کانال دوم`
+│ *عدد 300 فاصله زمانی بین هر ارسال به ثانیه است (پیش‌فرض: ۳۰۰ ثانیه).*
+╰───────────────
+
+╭─😡 **سیستم دشمن**
+│ • `.enemy` » (با ریپلای) فعال کردن دشمن
+│ • `.enemy off` » غیرفعال کردن دشمن
+╰───────────────
+
+💡 **نکته:** برای بهترین تجربه، فاصله‌گذاری‌ها و بولدها را حفظ کنید تا متن حس مدرن و شفاف بده.
+"""
+    await event.edit(help_text)
+
+# =======================
+# اجرای Client
+# =======================
+print("سلف‌بات شروع به کار کرد ✅")
+client.start()
+client.run_until_disconnected()
